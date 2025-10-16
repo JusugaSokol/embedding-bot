@@ -1,0 +1,12 @@
+# Virtual environments
+venv/
+
+# Local environment files
+.env
+
+# Django migration artifacts
+**/migrations/
+
+# Python cache
+__pycache__/
+*.pyc
