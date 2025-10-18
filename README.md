@@ -1,20 +1,20 @@
 # Embedding Bot
 
-A Django-based Telegram bot that ingests user documents, extracts their text, and generates vector embeddings using the Mistral API. The vectors are stored in PostgreSQL with pgvector for downstream semantic search or retrieval tasks.
+A Django-based Telegram bot that ingests user documents, extracts their text, and generates vector embeddings using the OpenAI GPT embedding API. The vectors are stored in PostgreSQL with pgvector for downstream semantic search or retrieval tasks.
 
 ## Features
 - Async Telegram bot built on `python-telegram-bot` for uploads and status updates.
 - Document ingestion pipeline with format-specific parsers (DOCX, CSV, TXT, Markdown).
 - Text segmentation via NLTK before embedding.
-- LangGraph-powered agent that handles batching and retries when calling the Mistral embeddings endpoint.
+- LangGraph-powered agent that handles batching and retries when calling the OpenAI embeddings endpoint.
 - Storage of embeddings and metadata in PostgreSQL/pgvector, plus archive export for processed files.
 
 ## Requirements
 - Python 3.12+
 - PostgreSQL 14+ with the pgvector extension
-- Mistral API key
+- OpenAI API key
 
-Key Python dependencies are listed in `requirements.txt` (Django, python-telegram-bot, langgraph, mistralai, nltk, etc.).
+Key Python dependencies are listed in `requirements.txt` (Django, python-telegram-bot, langgraph, openai, nltk, etc.).
 
 ## Quick Start
 1. **Clone & set up env**
@@ -42,20 +42,20 @@ DJANGO_SECRET_KEY=your-secret-key
 DEBUG=True
 ALLOWED_HOSTS=127.0.0.1,localhost
 
-LOCAL_DB_NAME=embedding_local_db
-LOCAL_DB_USER=embedding_local_user
-LOCAL_DB_PASSWORD=your-password
-LOCAL_DB_HOST=localhost
-LOCAL_DB_PORT=5432
+PRIMARY_DB_NAME=supabase_primary_db
+PRIMARY_DB_USER=supabase_primary_user
+PRIMARY_DB_PASSWORD=your-primary-password
+PRIMARY_DB_HOST=your-supabase-host.supabase.co
+PRIMARY_DB_PORT=5432
 
-VECTOR_DB_NAME=postgres
-VECTOR_DB_USER=postgres
+VECTOR_DB_NAME=supabase_vector_db
+VECTOR_DB_USER=supabase_vector_user
 VECTOR_DB_PASSWORD=your-vector-password
-VECTOR_DB_HOST=your-vector-host
+VECTOR_DB_HOST=your-vector-host.supabase.co
 VECTOR_DB_PORT=5432
 
 TELEGRAM_TOKEN=your-telegram-bot-token
-MISTRAL_API_KEY=your-mistral-api-key
+OPENAI_API_KEY=your-openai-api-key
 ```
 
 ## Testing
@@ -74,3 +74,4 @@ pytest
 - Ensure NLTK's `punkt` models are available; the code downloads them on demand.
 - Embedding batches include retry logic, but you should monitor logs for rate limiting.
 - Keep your `.env` and `venv` folders out of version control; see `.gitignore` for defaults.
+- After pulling this version, apply migration `0003_recreate_n8n_embed` (or run the provided SQL) so the `n8n-embed` table is recreated with vector dimension 1536 to match OpenAI embeddings.
