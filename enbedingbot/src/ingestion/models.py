@@ -48,7 +48,7 @@ class UploadedFile(models.Model):
 class N8NEmbed(models.Model):
     tittle = models.CharField(max_length=255)
     body = models.TextField()
-    embeding = VectorField(dimensions=1024)
+    embeding = VectorField(dimensions=1536)
 
     class Meta:
         db_table = 'n8n-embed'

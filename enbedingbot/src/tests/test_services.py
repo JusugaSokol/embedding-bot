@@ -54,7 +54,7 @@ def test_process_uploaded_file_creates_segments_and_embeddings(tmp_path):
         .order_by("id")
     )
     assert entries
-    assert all(len(entry.embeding) == 1024 for entry in entries)
+    assert all(len(entry.embeding) == 1536 for entry in entries)
 
 
 @pytest.mark.django_db(databases="__all__")

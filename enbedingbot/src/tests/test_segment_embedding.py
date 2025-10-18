@@ -46,7 +46,7 @@ def test_segment_embedding_lifecycle(tmp_path):
         .order_by("id")
     )
     assert len(entries) == len(segments)
-    assert all(len(entry.embeding) == 1024 for entry in entries)
+    assert all(len(entry.embeding) == 1536 for entry in entries)
 
     first_tittle = entries[0].tittle
     N8NEmbed.objects.using(alias).filter(tittle=first_tittle).delete()

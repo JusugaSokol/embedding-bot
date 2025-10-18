@@ -9,7 +9,13 @@ from typing import List, TypedDict
 from django.conf import settings
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
-from mistralai import Mistral, models
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    OpenAI,
+    RateLimitError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -17,6 +23,7 @@ logger = logging.getLogger(__name__)
 API_MAX_RETRIES = 6
 API_RETRY_BASE_DELAY = 4.0
 SEGMENT_BATCH_SIZE = 10
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 class EmbeddingState(TypedDict, total=False):
@@ -28,14 +35,15 @@ class EmbeddingState(TypedDict, total=False):
 class EmbeddingAgent:
     def __init__(
         self,
-        model: str = "mistral-embed",
-        client: Mistral | None = None,
+        model: str = DEFAULT_EMBEDDING_MODEL,
+        client: OpenAI | None = None,
         request_delay: float = 2.0,
     ):
-        api_key = getattr(settings, "MISTRAL_API_KEY", None) or os.getenv("MISTRAL_API_KEY")
+        api_key = getattr(settings, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("MISTRAL_API_KEY is not configured.")
-        self.client = client or Mistral(api_key=api_key)
+            raise ValueError("OPENAI_API_KEY is not configured.")
+
+        self.client = client or OpenAI(api_key=api_key)
         self.model = model
         self.request_delay = request_delay
         self.app = self._build_graph()
@@ -53,20 +61,34 @@ class EmbeddingAgent:
 
             for attempt in range(1, API_MAX_RETRIES + 1):
                 try:
-                    response = self.client.embeddings.create(model=self.model, inputs=[current_text])
+                    response = self.client.embeddings.create(
+                        model=self.model,
+                        input=current_text,
+                    )
                     break
-                except models.SDKError as error:
-                    message = str(error)
-                    if (
-                        "Status 429" in message
-                        or "service_tier_capacity_exceeded" in message
-                        or getattr(error, "status_code", None) == 429
-                    ):
+                except (
+                    RateLimitError,
+                    APITimeoutError,
+                    APIConnectionError,
+                ) as error:
+                    logger.warning(
+                        "OpenAI transient error (attempt %s/%s): %s",
+                        attempt,
+                        API_MAX_RETRIES,
+                        error,
+                    )
+                    if attempt == API_MAX_RETRIES:
+                        raise
+                    delay = API_RETRY_BASE_DELAY * attempt + random.uniform(0, API_RETRY_BASE_DELAY)
+                    time.sleep(delay)
+                    continue
+                except APIStatusError as error:
+                    if error.status_code == 429:
                         logger.warning(
-                            "Mistral rate limit hit (attempt %s/%s): %s",
+                            "OpenAI rate limit hit (attempt %s/%s): %s",
                             attempt,
                             API_MAX_RETRIES,
-                            message,
+                            error,
                         )
                         if attempt == API_MAX_RETRIES:
                             raise

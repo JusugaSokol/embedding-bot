@@ -73,13 +73,16 @@ WSGI_APPLICATION = 'src.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': env("LOCAL_DB_NAME"),
-        'USER': env("LOCAL_DB_USER"),
-        'PASSWORD': env("LOCAL_DB_PASSWORD"),
-        'HOST': env("LOCAL_DB_HOST", default="localhost"),
-        'PORT': env("LOCAL_DB_PORT", default="5432"),
+        'NAME': env("PRIMARY_DB_NAME"),
+        'USER': env("PRIMARY_DB_USER"),
+        'PASSWORD': env("PRIMARY_DB_PASSWORD"),
+        'HOST': env("PRIMARY_DB_HOST"),
+        'PORT': env("PRIMARY_DB_PORT", default="5432"),
+        'OPTIONS': {
+            'sslmode': 'require',
+        },
         'TEST': {
-            'NAME': 'test_embedding_local_db',
+            'NAME': 'test_embedding_db',
             'TEMPLATE': 'template0',
         },
     },
@@ -90,6 +93,9 @@ DATABASES = {
         'PASSWORD': env("VECTOR_DB_PASSWORD"),
         'HOST': env("VECTOR_DB_HOST"),
         'PORT': env("VECTOR_DB_PORT", default="5432"),
+        'OPTIONS': {
+            'sslmode': 'require',
+        },
         'TEST': {
             'MIRROR': 'default',
         },
@@ -142,6 +148,6 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", default="")
-MISTRAL_API_KEY = env("MISTRAL_API_KEY", default="")
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 
 DATABASE_ROUTERS = ['ingestion.db_router.EmbeddingRouter']
