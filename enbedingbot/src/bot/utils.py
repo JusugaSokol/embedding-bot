@@ -8,10 +8,10 @@ from ingestion.constants import UploadStatus
 from ingestion.models import UploadedFile
 
 STATUS_LABELS = {
-    UploadStatus.PENDING.value: "в очереди",
-    UploadStatus.PROCESSING.value: "обрабатывается",
-    UploadStatus.READY.value: "готово",
-    UploadStatus.FAILED.value: "ошибка",
+    UploadStatus.PENDING.value: "Pending",
+    UploadStatus.PROCESSING.value: "Processing",
+    UploadStatus.READY.value: "Ready",
+    UploadStatus.FAILED.value: "Failed",
 }
 
 
@@ -24,5 +24,5 @@ def format_history(files: Iterable[UploadedFile]) -> str:
     for item in files:
         timestamp = timezone.localtime(item.uploaded_at).strftime("%d.%m %H:%M")
         status = human_status(item)
-        rows.append(f"{timestamp} — {item.file_name} ({status})")
-    return "\n".join(rows) if rows else "История пуста."
+        rows.append(f"{timestamp} - {item.file_name} ({status})")
+    return "\n".join(rows) if rows else "No files yet."

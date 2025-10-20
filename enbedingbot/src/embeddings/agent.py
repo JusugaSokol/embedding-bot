@@ -38,12 +38,14 @@ class EmbeddingAgent:
         model: str = DEFAULT_EMBEDDING_MODEL,
         client: OpenAI | None = None,
         request_delay: float = 2.0,
+        api_key: str | None = None,
     ):
-        api_key = getattr(settings, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        resolved_key = api_key or getattr(settings, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
+        if not resolved_key:
             raise ValueError("OPENAI_API_KEY is not configured.")
 
-        self.client = client or OpenAI(api_key=api_key)
+        self.client = client or OpenAI(api_key=resolved_key)
+        self.api_key = resolved_key
         self.model = model
         self.request_delay = request_delay
         self.app = self._build_graph()

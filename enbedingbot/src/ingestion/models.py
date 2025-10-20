@@ -1,14 +1,26 @@
 ﻿from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from django.db import models
 from pgvector.django import VectorField
 
 from ingestion.constants import UploadStatus
-from ingestion.db import get_vector_db_alias
 from ingestion.storage import uploaded_file_path
+from ingestion.vector_store import VectorStoreService
+
+if TYPE_CHECKING:  # pragma: no cover
+    from bot.models import UserCredential
 
 
 class UploadedFile(models.Model):
+    profile = models.ForeignKey(
+        "bot.UserProfile",
+        null=True,
+        blank=True,
+        related_name="uploads",
+        on_delete=models.CASCADE,
+    )
     chat_id = models.BigIntegerField(db_index=True)
     file_name = models.CharField(max_length=255)
     original_file = models.FileField(upload_to=uploaded_file_path)
@@ -32,17 +44,19 @@ class UploadedFile(models.Model):
     def _title_prefix(self) -> str:
         return f"{self.file_name}|{self.id}|"
 
-    def segments_queryset(self):
-        alias = get_vector_db_alias()
-        prefix = self._title_prefix()
-        return (
-            N8NEmbed.objects.using(alias)
-            .filter(tittle__startswith=prefix)
-            .order_by("id")
-        )
-
     def segments_count(self) -> int:
-        return self.segments_queryset().count()
+        credential = getattr(self.profile, "credential", None)
+        if not credential:
+            return 0
+        store = VectorStoreService(credential)
+        return store.count_segments(self._title_prefix())
+
+    def fetch_segments(self):
+        credential = getattr(self.profile, "credential", None)
+        if not credential:
+            return []
+        store = VectorStoreService(credential)
+        return store.fetch_segments(self._title_prefix())
 
 
 class N8NEmbed(models.Model):

@@ -1,31 +1,25 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import json
 import logging
-import time
 import zipfile
 from pathlib import Path
-from typing import Callable, Iterable, List, TypeVar
+from typing import Iterable, List, Sequence
 
 from django.core.files import File
-from django.db import OperationalError, connections, transaction
 from django.utils import timezone
 
 from embeddings.agent import EmbeddingAgent
 from embeddings.segmenter import segment_text
 from ingestion import parsers
 from ingestion.constants import MAX_FILE_SIZE_MB, SUPPORTED_EXTENSIONS, UploadStatus
-from ingestion.db import get_vector_db_alias
-from ingestion.models import N8NEmbed, UploadedFile
+from ingestion.models import UploadedFile
+from ingestion.vector_store import VectorStoreService
 
 logger = logging.getLogger(__name__)
 
 TITLE_SEPARATOR = "|"
-DB_MAX_RETRIES = 3
-DB_RETRY_DELAY_SECONDS = 1.0
-DB_STEP_DELAY_SECONDS = 0.25
-T = TypeVar("T")
 
 
 class IngestionError(Exception):
@@ -52,24 +46,6 @@ def _title_for_segment(uploaded: UploadedFile, position: int) -> str:
     return f"{_title_prefix(uploaded)}{position}"
 
 
-def _execute_with_retry(alias: str, func: Callable[[], T]) -> T:
-    for attempt in range(1, DB_MAX_RETRIES + 1):
-        try:
-            return func()
-        except OperationalError as error:
-            logger.warning(
-                "Database operation failed (attempt %s/%s): %s",
-                attempt,
-                DB_MAX_RETRIES,
-                error,
-            )
-            connections[alias].close()
-            if attempt == DB_MAX_RETRIES:
-                raise
-            time.sleep(DB_RETRY_DELAY_SECONDS * attempt)
-    raise IngestionError("Database operation failed after retries.")
-
-
 def validate_extension(file_name: str) -> None:
     extension = Path(file_name).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
@@ -86,6 +62,7 @@ def validate_file_size(file_size: int) -> None:
 
 def store_uploaded_file(
     *,
+    profile,
     chat_id: int,
     file_path: Path,
     file_name: str,
@@ -100,6 +77,7 @@ def store_uploaded_file(
     with file_path.open("rb") as source:
         django_file = File(source, name=file_name)
         uploaded = UploadedFile.objects.create(
+            profile=profile,
             chat_id=chat_id,
             file_name=file_name,
             file_size=file_size,
@@ -130,7 +108,12 @@ def create_segments(uploaded: UploadedFile, text: str) -> List[str]:
     return segments
 
 
-def apply_embeddings(uploaded: UploadedFile, segments: Iterable[str], agent: EmbeddingAgent) -> None:
+def apply_embeddings(
+    uploaded: UploadedFile,
+    segments: Iterable[str],
+    agent: EmbeddingAgent,
+    store: VectorStoreService,
+) -> None:
     segment_list = list(segments)
     if not segment_list:
         return
@@ -139,36 +122,30 @@ def apply_embeddings(uploaded: UploadedFile, segments: Iterable[str], agent: Emb
     if len(vectors) != len(segment_list):
         raise IngestionError("Number of embeddings does not match number of segments.")
 
-    alias = get_vector_db_alias()
     prefix = _title_prefix(uploaded)
     logger.info("Storing %s embeddings for file id=%s", len(vectors), uploaded.id)
 
-    def _delete_existing() -> None:
-        with transaction.atomic(using=alias):
-            N8NEmbed.objects.using(alias).filter(tittle__startswith=prefix).delete()
-
-    _execute_with_retry(alias, _delete_existing)
-    time.sleep(DB_STEP_DELAY_SECONDS)
-
-    entries = [
-        N8NEmbed(
-            tittle=_title_for_segment(uploaded, index),
-            body=content,
-            embeding=vector,
+    entries: list[tuple[str, str, Sequence[float]]] = [
+        (
+            _title_for_segment(uploaded, index),
+            content,
+            vector,
         )
         for index, (content, vector) in enumerate(zip(segment_list, vectors, strict=True), start=1)
     ]
-
-    def _insert_entries() -> None:
-        with transaction.atomic(using=alias):
-            N8NEmbed.objects.using(alias).bulk_create(entries)
-
-    _execute_with_retry(alias, _insert_entries)
-    time.sleep(DB_STEP_DELAY_SECONDS)
+    try:
+        store.replace_segments(prefix, entries)
+    except Exception as error:  # noqa: BLE001
+        logger.exception("Failed to store embeddings for file id=%s", uploaded.id)
+        raise IngestionError("Unable to persist embeddings in Supabase.") from error
 
 
 def process_uploaded_file(uploaded: UploadedFile, agent: EmbeddingAgent | None = None) -> UploadedFile:
-    agent = agent or EmbeddingAgent()
+    credential = getattr(uploaded.profile, "credential", None)
+    if not credential:
+        raise IngestionError("Profile is not configured. Run /start and supply Supabase/OpenAI credentials.")
+
+    agent = agent or EmbeddingAgent(api_key=credential.openai_api_key)
     uploaded.status = UploadStatus.PROCESSING.value
     uploaded.error_message = ""
     uploaded.save(update_fields=["status", "error_message"])
@@ -176,7 +153,8 @@ def process_uploaded_file(uploaded: UploadedFile, agent: EmbeddingAgent | None =
     try:
         text = parse_document(uploaded)
         segments = create_segments(uploaded, text)
-        apply_embeddings(uploaded, segments, agent)
+        store = VectorStoreService(credential)
+        apply_embeddings(uploaded, segments, agent, store)
     except IngestionError as error:
         logger.warning("Processing of file id=%s failed: %s", uploaded.id, error)
         uploaded.status = UploadStatus.FAILED.value
@@ -200,30 +178,27 @@ def process_uploaded_file(uploaded: UploadedFile, agent: EmbeddingAgent | None =
 
 
 def build_export_archive(uploaded: UploadedFile) -> io.BytesIO:
+    credential = getattr(uploaded.profile, "credential", None)
+    if not credential:
+        raise IngestionError("Profile is not configured. Run /start first.")
+
     buffer = io.BytesIO()
-    alias = get_vector_db_alias()
     prefix = _title_prefix(uploaded)
+    store = VectorStoreService(credential)
 
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         source_path = Path(uploaded.original_file.path)
         archive.write(source_path, arcname=f"original/{source_path.name}")
 
-        def _fetch_entries() -> list[N8NEmbed]:
-            return list(
-                N8NEmbed.objects.using(alias)
-                .filter(tittle__startswith=prefix)
-                .order_by("id")
-            )
-
-        entries = _execute_with_retry(alias, _fetch_entries)
+        entries = store.fetch_segments(prefix)
 
         segments_data = [
             {
-                "tittle": entry.tittle,
-                "body": entry.body,
-                "embeding": entry.embeding,
+                "tittle": title,
+                "body": body,
+                "embeding": list(embedding),
             }
-            for entry in entries
+            for title, body, embedding in entries
         ]
         archive.writestr(
             "segments.json",
