@@ -5,6 +5,7 @@ from typing import Iterable, List
 import nltk
 
 _punkt_ready = False
+MAX_CHARACTERS_PER_CHUNK = 200
 
 
 def ensure_punkt() -> None:
@@ -23,7 +24,7 @@ def ensure_punkt() -> None:
 def chunk_sentences(
     sentences: Iterable[str],
     max_sentences: int = 3,
-    max_characters: int = 1200,
+    max_characters: int = MAX_CHARACTERS_PER_CHUNK,
 ) -> List[str]:
     chunks: List[str] = []
     buffer: list[str] = []
@@ -71,14 +72,32 @@ def _sentence_is_informative(
     return True
 
 
+def _split_lines_preserving_order(text: str) -> List[str]:
+    segments: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if len(line) <= MAX_CHARACTERS_PER_CHUNK:
+            segments.append(line)
+            continue
+        for start in range(0, len(line), MAX_CHARACTERS_PER_CHUNK):
+            segments.append(line[start : start + MAX_CHARACTERS_PER_CHUNK])
+    return segments
+
+
 def segment_text(
     text: str,
     max_sentences: int = 3,
-    max_characters: int = 1200,
+    max_characters: int = MAX_CHARACTERS_PER_CHUNK,
     language: str = "russian",
     min_words: int = 3,
     min_alpha_ratio: float = 0.5,
+    force_line_chunks: bool = False,
 ) -> List[str]:
+    if force_line_chunks:
+        return _split_lines_preserving_order(text)
+
     ensure_punkt()
     sentences = nltk.sent_tokenize(text, language=language)
     filtered = [
@@ -94,5 +113,5 @@ def segment_text(
     return chunk_sentences(
         filtered,
         max_sentences=max_sentences,
-        max_characters=max_characters,
+        max_characters=min(max_characters, MAX_CHARACTERS_PER_CHUNK),
     )

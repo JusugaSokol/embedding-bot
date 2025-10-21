@@ -55,6 +55,7 @@ def _title_for_segment(uploaded: UploadedFile, position: int) -> str:
 def _execute_with_retry(alias: str, func: Callable[[], T]) -> T:
     for attempt in range(1, DB_MAX_RETRIES + 1):
         try:
+            connections[alias].ensure_connection()
             return func()
         except OperationalError as error:
             logger.warning(
@@ -68,6 +69,15 @@ def _execute_with_retry(alias: str, func: Callable[[], T]) -> T:
                 raise
             time.sleep(DB_RETRY_DELAY_SECONDS * attempt)
     raise IngestionError("Database operation failed after retries.")
+
+
+def _save_with_retry(instance, *, update_fields=None, using: str | None = None) -> None:
+    alias = using or instance._state.db or "default"
+
+    def _save() -> None:
+        instance.save(update_fields=update_fields, using=using)
+
+    _execute_with_retry(alias, _save)
 
 
 def validate_extension(file_name: str) -> None:
@@ -97,18 +107,20 @@ def store_uploaded_file(
 
     logger.info("Received file %s (%s bytes) from chat %s", file_name, file_size, chat_id)
 
-    with file_path.open("rb") as source:
-        django_file = File(source, name=file_name)
-        uploaded = UploadedFile.objects.create(
-            chat_id=chat_id,
-            file_name=file_name,
-            file_size=file_size,
-            mime_type=mime_type or "",
-            status=UploadStatus.PENDING.value,
-        )
-        uploaded.original_file.save(file_name, django_file, save=True)
+    def _create_record() -> UploadedFile:
+        with file_path.open("rb") as source:
+            django_file = File(source, name=file_name)
+            uploaded = UploadedFile.objects.create(
+                chat_id=chat_id,
+                file_name=file_name,
+                file_size=file_size,
+                mime_type=mime_type or "",
+                status=UploadStatus.PENDING.value,
+            )
+            uploaded.original_file.save(file_name, django_file, save=True)
+            return uploaded
 
-    return uploaded
+    return _execute_with_retry("default", _create_record)
 
 
 def parse_document(uploaded: UploadedFile) -> str:
@@ -122,7 +134,9 @@ def parse_document(uploaded: UploadedFile) -> str:
 
 
 def create_segments(uploaded: UploadedFile, text: str) -> List[str]:
-    segments = segment_text(text)
+    file_name = uploaded.file_name or ""
+    force_line_chunks = file_name.lower().endswith(".csv")
+    segments = segment_text(text, force_line_chunks=force_line_chunks)
     if not segments:
         raise EmptyFileError("Unable to split text into segments.")
 
@@ -171,7 +185,7 @@ def process_uploaded_file(uploaded: UploadedFile, agent: EmbeddingAgent | None =
     agent = agent or EmbeddingAgent()
     uploaded.status = UploadStatus.PROCESSING.value
     uploaded.error_message = ""
-    uploaded.save(update_fields=["status", "error_message"])
+    _save_with_retry(uploaded, update_fields=["status", "error_message"])
 
     try:
         text = parse_document(uploaded)
@@ -182,19 +196,19 @@ def process_uploaded_file(uploaded: UploadedFile, agent: EmbeddingAgent | None =
         uploaded.status = UploadStatus.FAILED.value
         uploaded.error_message = str(error)
         uploaded.processed_at = timezone.now()
-        uploaded.save(update_fields=["status", "error_message", "processed_at"])
+        _save_with_retry(uploaded, update_fields=["status", "error_message", "processed_at"])
         raise
     except Exception as error:  # noqa: BLE001
         uploaded.status = UploadStatus.FAILED.value
         uploaded.error_message = str(error)
         uploaded.processed_at = timezone.now()
-        uploaded.save(update_fields=["status", "error_message", "processed_at"])
+        _save_with_retry(uploaded, update_fields=["status", "error_message", "processed_at"])
         logger.exception("Unexpected error while processing file id=%s", uploaded.id)
         raise IngestionError("Unable to process file. Please try again later.") from error
     else:
         uploaded.status = UploadStatus.READY.value
         uploaded.processed_at = timezone.now()
-        uploaded.save(update_fields=["status", "processed_at", "error_message"])
+        _save_with_retry(uploaded, update_fields=["status", "processed_at", "error_message"])
         logger.info("File id=%s processed successfully", uploaded.id)
         return uploaded
 
